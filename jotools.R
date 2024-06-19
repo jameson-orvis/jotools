@@ -385,7 +385,7 @@ evaluate_synergy = function(res, leave_out_concatemers, chid.to.test, chromosome
     this.back.train.dat = this.back.train.dat[!bid %in% this.back.train.dat[, .(sum(count)), by = bid][V1 == 0]$bid]
 ####    
 
-    browser()
+    ##browser()
     
     back.model = fit(na.omit(this.back.train.dat)[sum.counts > 0][, setdiff(names(this.back.train.dat), c('overall.cardinality', 'chr', 'annotation')), with = F])
 
@@ -2876,7 +2876,7 @@ annotate_and_score_distance_decay = function(iterative.registry, iterative.regis
         model = glm.nb(formula = fm, data=dist.decay.train[sample(.N, num.to.sample)], control=glm.control(maxit=500))
     }
     ##dist.decay.train = score_distance_decay(dist.decay.train, model)
-    browser()
+    ##browser()
     dist.decay.test = score_distance_decay(dist.decay.test, model)
     dist.decay.test[, relative.risk := log2(abs(num.concats - num.concats.pred))]
 
@@ -2905,6 +2905,9 @@ annotate_and_score_distance_decay = function(iterative.registry, iterative.regis
 
 derive_binsets_from_network = function(G.kant, pairwise, binned.concats, bins, rr.thresh = 3, dist.decay.test=NULL, all.pairs.tested=NULL, num.members=10, pairwise.trimmed=pairwise) {
 
+    ##G.kant = bin.pair.network
+    print(pairwise)
+    pairwise.trimmed$agg = do.call(Map, c(f = c, pairwise.trimmed[, c('i','j')]))
     G.kant.10 = subgraph.edges(G.kant, E(G.kant)[E(G.kant)$weight > rr.thresh])
     G.kant.undir = as.undirected(G.kant.10)
     cl.l = cluster_leiden(G.kant.undir, objective_function='modularity')
@@ -2988,7 +2991,7 @@ derive_binsets_from_network = function(G.kant, pairwise, binned.concats, bins, r
     print(seeds)
     ##merge(seeds, dist.decay.test, by='pair.hashes')
 ##OA
-    colnames(all.pairwise)[4] = 'pair.hashes'
+    ##colnames(all.pairwise)[4] = 'pair.hashes'
     binsets.gr = expand_seeds(seeds, dist.decay.test, pairwise, all.pairs.tested=NULL, bins)
     binsets.dt = gr2dt(binsets.gr)
     
@@ -3395,14 +3398,14 @@ expand_seeds = function(seeds, dist.decay.test, pairwise, all.pairs.tested, bins
     pairwise.2$i = pairwise$j
     pairwise.2$j = pairwise$i
     pairwise.sym = rbind(pairwise, pairwise.2)
-    colnames(pairwise.sym)[colnames(pairwise.sym)=='id'] = 'pair.hashes'
+    ##colnames(pairwise.sym)[colnames(pairwise.sym)=='id'] = 'pair.hashes'
     
     for(i in 1:50){
         if(class(dist.decay.test$pair.hashes)=='integer'){
             seeds.loop$pair.hashes = strtoi(seeds.loop$pair.hashes)
         }
 
-        seed.decays = merge(dist.decay.test, seeds.loop, by.x='pair.hashes', by.y='pair.hashes')
+        seed.decays = merge(dist.decay.test, seeds.loop, by.x='pair.hashes', by.y='pair.hashes', allow.cartesian=TRUE)
         ##seed.decays = dist.decay.test[pair.hashes %in% seeds.loop$pair.hashes]
 
         ##seed.decays = merge(seed.decays, seeds.loop[, c('pair.hashes','cluster')], by='pair.hashes', allow.cartesian=TRUE)
@@ -3458,7 +3461,7 @@ expand_seeds = function(seeds, dist.decay.test, pairwise, all.pairs.tested, bins
 
 
 ###alt check
-        cluster.labeled = merge(seeds.loop, dist.decay.test, by='pair.hashes')
+        cluster.labeled = merge(seeds.loop, dist.decay.test, by='pair.hashes', allow.cartesian=TRUE)
         all.cluster.check = merge(cluster.labeled, bin.to.add, by.x=c('cluster','binterrogate'), by.y=c('cluster','bin.discovered'))
 
         paircount = seeds.loop[, .(all.count = .N), by='cluster']
@@ -3541,7 +3544,7 @@ expand_seeds = function(seeds, dist.decay.test, pairwise, all.pairs.tested, bins
 
 
 symmetry_check = function(scored.annotate, synergy_results_scored, binsets) {
-
+    synergy_results_scored[, total_annot := .N, by=c('annotation')]
     enriched.3way = scored.annotate[cardinality==3 & pval<0.05 & count>0]
     all.3way = scored.annotate[cardinality==3]
 
@@ -3555,11 +3558,12 @@ symmetry_check = function(scored.annotate, synergy_results_scored, binsets) {
     min.dists.all = merge(every.bid, all.3way[, c('bid','min.dist')], by='bid')
 
     colnames(every.bid)[1] = 'bid.test'
+    synergy_results_scored = synergy_results_scored[!is.na(fdr)]
     every.bid = merge(every.bid, synergy_results_scored[, c('bid','fdr')], by.x='bid.test', by.y='bid', all.x=TRUE)
     every.bid = every.bid[fdr<0.1]
 
     binsets$bid = factor(binsets$bid)
-    every.bid = merge(every.bid, binsets[, c('bid','overall.cardinality')], by.x='bid.test', by.y='bid')
+    every.bid = merge(every.bid, binsets[, c('bid','overall.cardinality')], by.x='bid.test', by.y='bid', allow.cartesian=TRUE)
     ##browser()
     every.bid = every.bid[overall.cardinality > 4 & fdr<0.1] %>% unique(by='bid.test')
 
@@ -4036,7 +4040,7 @@ aggregate_synergy_results = function(dir, toplevel=TRUE, strict.check=FALSE) {
 
 
 
-evaluate_synergy_experimental = function(res, leave_out_concatemers, chid.to.test, chromosome = NULL, filter_binsets = TRUE, folder = NULL, rebin_thresh = 0.85, mc.cores = 20, numchunks = mc.cores*200 + 1, dont_rebin=FALSE, sub.binset.order=3, resolution=1e4) {
+evaluate_synergy_experimental = function(res, leave_out_concatemers, chid.to.test, chromosome = NULL, filter_binsets = TRUE, folder = NULL, rebin_thresh = 0.85, mc.cores = 20, numchunks = mc.cores*200 + 1, dont_rebin=FALSE, sub.binset.order=3, resolution=1e4, remove.bad=TRUE) {
 
 
     if (!dir.exists(folder)) {
@@ -4081,7 +4085,10 @@ evaluate_synergy_experimental = function(res, leave_out_concatemers, chid.to.tes
     ####
 
     ##browser()
-    this.chrom.dt = gr2dt(res$binsets)
+    if(!(class(res) == 'data.table'))
+        this.chrom.dt = gr2dt(res$binsets)
+    else
+        this.chrom.dt = res
     
     this.chrom.dt[, cardinality := .N, by = chid]
     this.chrom.dt = na.omit(this.chrom.dt)
@@ -4107,7 +4114,8 @@ evaluate_synergy_experimental = function(res, leave_out_concatemers, chid.to.tes
     this.all.dat$bid = this.all.dat$chid
     this.bad.chrom = unique(as.character((dt2gr(this.all.dat) %&% (this.bad))$bid))                                                 
     print(this.bad.chrom)
-    this.all.dat = this.all.dat[!bid %in% this.bad.chrom]  
+    if (remove.bad)
+        this.all.dat = this.all.dat[!bid %in% this.bad.chrom]  
                                         #browser()
     #debug(annotate)
     chrom.annot.output = annotate(binsets = dt2gr(this.all.dat[, bid := chid]),
@@ -4245,8 +4253,10 @@ evaluate_synergy_experimental = function(res, leave_out_concatemers, chid.to.tes
     print('the hit rate!!!')
     print(s.chrom[, .N])
     print(s.chrom[fdr<0.1, .N])
-    
 
+    saveRDS(s.chrom, paste0(folder,'synergy_results.rds'))
+    saveRDS(this.chrom.dat, paste0(folder,'chrom_annotate.rds'))
+    
     this.all.dat.shuff5 = pbmclapply(1:length(all.bid), function(nr){
          this.clust = dt2gr(this.all.dat[bid == all.bid[nr]])
          this.chrs = .chr2str(as.character(unique(seqnames(this.clust))))
@@ -4300,6 +4310,7 @@ evaluate_synergy_experimental = function(res, leave_out_concatemers, chid.to.tes
              rm(edges)
              gc()
              out = this.tgm$gr[RW]%>% gr2dt()
+             out = out[1:sum(card$new.count)] ##weird bug
              out$read_idx = card[, rep(read_idx, new.count)] 
              out[, bid := all.bid[nr]]
              out[, cid := read_idx]
@@ -4345,6 +4356,7 @@ evaluate_synergy_experimental = function(res, leave_out_concatemers, chid.to.tes
                       annotated.binsets = na.omit(this.back.test.dat), model = back.model)
     b.chrom$fdr = signif(p.adjust(b.chrom$p, "BH"), 2)
     ##
+
     synergy.inter.EP = rbind(s.chrom[, annotation := "chromunity"],
                              b.chrom[, annotation := "random"], 
                              sh.chrom[, annotation := "shuffled"], fill = T)
@@ -4362,7 +4374,7 @@ evaluate_synergy_experimental = function(res, leave_out_concatemers, chid.to.tes
 
 
 interchr_dist_decay_binsets = function(concatemers, bins, training.chr = 'chr7', pair.thresh=50, numchunks=200, mask.bad.regions = TRUE, rr.thresh=3) {
-
+    bins$binid = 1:length(bins)
     output.train = prepare_distance_decay_inputs(concatemers %Q% (seqnames==training.chr), bins %Q% (seqnames==training.chr))
     
     iterative.registry = output.train[[1]]
@@ -4373,20 +4385,22 @@ interchr_dist_decay_binsets = function(concatemers, bins, training.chr = 'chr7',
 
     model = train_dist_decay_model(iterative.registry, iterative.registry.unlist.filterable, contact_matrix_unique, pairwise, concatemers, bins)
 
-    contact_matrix_unique = cocount(tpe1_halfsubsamp, bins = bins, by = 'read_idx')
+    contact_matrix_unique = cocount(concatemers, bins = bins, by = 'read_idx')
     all.pairwise = contact_matrix_unique$dat
-
-
+    all.pairwise$id = 1:dim(all.pairwise)[[1]]
+    colnames(all.pairwise)[3] = 'pair.value'
+    
     concatemers$cid = concatemers$read_idx
     binned.concats = bin_concatemers(concatemers, bins, max.slice=1e6, mc.cores=5)
     dt.concats = unique(binned.concats[, c('cidi','binid')], by=c('cidi','binid'))
     dt.concats.sort = dt.concats[order(binid, cidi)]
     dt.concats.sort[, count := .N, by='cidi']
-
+    
 
 ##pairwise = contact_matrix_unique$dat
+    
     colnames(all.pairwise)[4] = 'pair.hashes'
-    pairwise.trimmed = all.pairwise[value >= pair.thresh]
+    pairwise.trimmed = all.pairwise[pair.value >= pair.thresh]
     pairwise.trimmed[, dist := j-i]
     pairwise.trimmed = pairwise.trimmed[dist > 1]
 
@@ -4402,10 +4416,15 @@ interchr_dist_decay_binsets = function(concatemers, bins, training.chr = 'chr7',
         pairwise.trimmed = pairwise.trimmed[!(i %in% bad.bins$binid)]
         pairwise.trimmed = pairwise.trimmed[!(j %in% bad.bins$binid)]
     }
-    
-    unique.pairs = pairwise.trimmed$id %>% unique
+
+    ##pairwise.trimmed$id = 1:dim(pairwise.trimmed)[[1]]
+    unique.pairs = pairwise.trimmed$pair.hashes %>% unique
     pair.splitting = data.table(unique.pairs, group=ceiling(runif(length(unique.pairs))*numchunks))
     pairwise.trimmed$group = pair.splitting$group
+
+    pairwise.trimmed$id = pairwise.trimmed$pair.hashes
+    all.pairwise$id = all.pairwise$pair.hashes
+
     pairwise.chunks = split(pairwise.trimmed, by='group')
 
 ##oh this isn't even bad! memory-wise
@@ -4423,15 +4442,17 @@ interchr_dist_decay_binsets = function(concatemers, bins, training.chr = 'chr7',
     genome.wide.dist.decay[, relative.risk := log2(abs(num.concats - num.concats.pred))]
 ##genome.wide.dist.decay$sidi = 1:dim(genome.wide.dist.decay)[[1]]
 
+
     bin.pair.network = create_bin_pair_network_efficient(all.pairwise, genome.wide.dist.decay, rr.thresh=rr.thresh)
 
-    chrom = derive_binsets_from_network(bin.pair.network, all.pairwise, binned.concats, bins, rr.thresh=rr.thresh, dist.decay.test=genome.wide.dist.decay, all.pairs.tested=NULL, pairwise.trimmed=pairwise.trimmed)
+    chrom = derive_binsets_from_network(bin.pair.network, pairwise=all.pairwise, binned.concats=binned.concats, bins=bins, rr.thresh=rr.thresh, dist.decay.test=genome.wide.dist.decay, all.pairs.tested=NULL, pairwise.trimmed=pairwise.trimmed)
 
+    
     return(chrom)
 }
 
 
-train_dist_decay_model = function(iterative.registry, iterative.registry.unlist.filterable, contact_matrix_unique, pairwise, concatemers, bins) {
+train_dist_decay_model = function(iterative.registry, iterative.registry.unlist.filterable, contact_matrix_unique, pairwise, concatemers, bins, pair.thresh=50) {
 
      dist.decay.train = annotate_distance_decay(concatemers,
                                                    bins,
@@ -4657,6 +4678,10 @@ create_bin_pair_network_efficient = function(all.pairwise, genome.wide.dist.deca
     all.pairwise.trimmed.2$j = all.pairwise$i
     pairwise.sym = rbind(all.pairwise, all.pairwise.trimmed.2)
 
+    ##all.pairwise.trimmed.2 = pairwise.trimmed %>% copy
+    ##all.pairwise.trimmed.2$i = pairwise.trimmed$j
+    ##all.pairwise.trimmed.2$j = pairwise.trimmed$i
+    ##pairwise.sym = rbind(pairwise.trimmed, all.pairwise.trimmed.2)
 
 
     neighbor.1 = merge(genome.wide.dist.decay[relative.risk >= rr.thresh & pval < 0.05, c('i','j','binterrogate','relative.risk','pair.hashes')], pairwise.sym, by.x=c('i','binterrogate'), by.y=c('i','j'))
@@ -4674,9 +4699,44 @@ create_bin_pair_network_efficient = function(all.pairwise, genome.wide.dist.deca
 ##all.neighbors$hashes = map(all.neighbors$sidi, unname) %>% paste0
 ##all.neighbors = unique(all.neighbors, by=c('i','j','binterrogate'))
 
-    all.neighbors$pair.hashes = all.neighbors$pair.hashes %>% factor
-    all.neighbors$id = all.neighbors$id %>% factor
-    G.kant.10 = graph_from_edgelist(as.matrix(all.neighbors[,c('pair.hashes','id')]), directed=TRUE)
+    all.neighbors$pair.hashes.x = all.neighbors$pair.hashes.x %>% factor
+    all.neighbors$pair.hashes.y = all.neighbors$pair.hashes.y %>% factor
+    G.kant.10 = graph_from_edgelist(as.matrix(all.neighbors[,c('pair.hashes.x','pair.hashes.y')]), directed=TRUE)
     E(G.kant.10)$weight = all.neighbors$relative.risk
     return(G.kant.10)
+}
+
+
+run_interchr_dist_decay = function(concatemers, bins, folder, rr.thresh=2, pair.thresh=30) {
+    unique_read_idx = concatemers$cid %>% unique
+    training.idx = sample(unique_read_idx, length(unique_read_idx)/2)
+    training.gr = concatemers %Q% (read_idx %in% training.idx)
+    test.gr = concatemers %Q% !(read_idx %in% training.idx)
+    chrom = interchr_dist_decay_binsets(training.gr, bins, rr.thresh=rr.thresh, pair.thresh=pair.thresh)
+    
+    dir.create(folder)
+    saveRDS(chrom, paste0(folder, '/chromunity_results.rds'))
+    saveRDS(training.gr, paste0(folder, '/training_concatemers.rds'))
+
+    chid.to.test = (chrom$chid %>% unique)
+    syn.interchr = evaluate_synergy_experimental(chrom, test.gr, chid.to.test, folder=folder)
+    syns = aggregate_synergy_results_singledir(folder, strict.check=TRUE)
+    return(syns)
+}
+
+
+aggregate_synergy_results_singledir = function(dir, strict.check=FALSE) {
+
+    synergy.chunk = readRDS(paste0(dir, '/synergy_results.rds'))
+    synergy.chunk = synergy.chunk[!is.na(fdr)]
+    binsets = readRDS(paste0(dir, '/binsets.rds'))
+
+    annotate = readRDS(paste0(dir, '/chrom_annotate.rds'))
+    if(strict.check)
+        synergy.chunk = symmetry_check(annotate, synergy.chunk, binsets)
+
+    binsets$bid = factor(binsets$bid)
+    synsets = merge(binsets, synergy.chunk[annotation=='chromunity', c('bid','fdr')], by='bid')
+    synsets = synsets[fdr<.1]
+    return(list(synergy.chunk, dt2gr(synsets)))
 }
