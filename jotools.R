@@ -3038,7 +3038,7 @@ derive_binsets_from_network = function(G.kant, pairwise, binned.concats, bins, r
     ##new.binsets.dt[, numbins := .N, by='chid']
 
     ###new.binsets.dt[seqnames != 'chr3' & start != 93460001 & end != 93490000] ##SOME STEP OF DROPPING OVERMAPPED BINS
-    new.binsets.dt = new.binsets.dt[seqnames != 'chr3' & start != 93460001 & end != 93490000]
+    ####new.binsets.dt = new.binsets.dt[seqnames != 'chr3' & start != 93460001 & end != 93490000]
 
     new.binsets = dt2gr(new.binsets.dt)
     chrom = Chromunity(binsets=dt2gr(new.binsets.dt), concatemers=contacted.concatemers, meta=data.table())
@@ -3305,6 +3305,7 @@ call_synergies = function(res, leave_out_concatemers, cell.line.dir, condition.d
 
 analyze_concats = function(new.concats.dt) {
      ##new.concats.dt = gr2dt(new.concats)
+     contact.order.dist = data.table()
      new.concats.dt[, bincount := .N, by='read_idx']
      unique.concats = unique(new.concats.dt, by='read_idx')
 
@@ -3331,22 +3332,22 @@ analyze_concats = function(new.concats.dt) {
      intra.vs.inter = unique(intra.vs.inter, by='read_idx')
 
      percent.cis = sum(intra.vs.inter$intra.contacts) / sum(intra.vs.inter$contacts.count)
-     ##pairs.new.row$percent.cis = percent.cis
+     contact.order.dist$percent.cis = percent.cis
 
      ##contact count
      contact.count = sum(unique.concats$contacts.count)
-     ##pairs.new.row$contact.count = contact.count
+     contact.order.dist$contact.count = contact.count
 
      ##contacts per gb unique.c
-     contacts.per.gb = contact.count / ((total.gb) / (10^9))
+     ##contacts.per.gb = contact.count / ((total.gb) / (10^9))
      ##pairs.new.row$contacts.per.gb = contacts.per.gb
 
-     contacts.per.gb = (pairs.table[1]$contact.count) / (pairs.table[1]$total_bases / (10^9))
-     contacts.per.gb
+     ##contacts.per.gb = (pairs.table[1]$contact.count) / (pairs.table[1]$total_bases / (10^9))
+     ##contact.order.dist$contacts.per.gb = contacts.per.gb
      ##pairs.table[1]$contacts.per.gb = contacts.per.gb
 
      ###contact order distribution
-     contact.order.dist = data.table()
+     
      contact.order.dist$lessone = sum(unique.concats$bincount == 1)
 
      total.reads = dim(unique.concats)[[1]]
@@ -3604,8 +3605,8 @@ symmetry_check = function(scored.annotate, synergy_results_scored, binsets) {
 
     ##browser()
     symmetry_syn[, strict.synergy := FALSE]
-    symmetry_syn[fdr.x<0.1 & symmetry.p.value > 0.1 & fdr.y > 0.1 & coverage > 0.1 & is.dispersed==TRUE, strict.synergy := TRUE] ###the only goood good
-
+    symmetry_syn[fdr.x<0.1 & symmetry.p.value > 0.1  & coverage > 0.1 & is.dispersed==TRUE, strict.synergy := TRUE] ###the only goood good
+    ##symmetry_syn[fdr.x<0.1 & symmetry.p.value > 0.1, strict.synergy := TRUE] ###the only goood good
 
     symmetry_syn[strict.synergy==FALSE, fdr.x := 1]
     sym = symmetry_syn
@@ -4320,7 +4321,7 @@ evaluate_synergy_experimental = function(res, leave_out_concatemers, chid.to.tes
                                           k = sub.binset.order,
                                           concatemers = dt2gr(out),
                                           covariates = gc.cov, resolution = resolution, 
-                                          mc.cores = 5, numchunks = numchunks)
+                                          mc.cores = 1, numchunks = numchunks)
              ## shuff.concats$cid = shuff.concats$read_idx
              ## sh.output.2 = annotate(binsets = this.clust, verbose = F,
              ##                              k = 5,
@@ -4739,4 +4740,16 @@ aggregate_synergy_results_singledir = function(dir, strict.check=FALSE) {
     synsets = merge(binsets, synergy.chunk[annotation=='chromunity', c('bid','fdr')], by='bid')
     synsets = synsets[fdr<.1]
     return(list(synergy.chunk, dt2gr(synsets)))
+}
+
+
+
+calculate_binned_contact_count = function(concats.gr, bins.gr) {
+    binned.concats = bin_concatemers(concats.gr, bins = bins.gr, max.slice = 1e6, mc.cores=5, verbose=TRUxE, hyperedge.thresh = 3)
+    dedupe.concats = unique(binned.concats, by=c('read_idx','binid'))
+    dedupe.concats[, numbins := .N, by='read_idx']
+    dedupe.concats[, num.contacts := choose(numbins, 2)]
+    unique.concats = unique(dedupe.concats, by='read_idx')
+    binned.contact.count = sum(unique.concats$num.contacts)
+    return(binned.contact.count)
 }
