@@ -2728,6 +2728,20 @@ score_distance_decay = function(dt.small.model, model){
     return(dt.small.model)
 }
 
+
+score_distance_decay_poisson = function(dt.small.model, model){
+    dt.small.model$num.concats.pred = (predict(model, type = "response", newdata = dt.small.model))
+    pval = ppois(dt.small.model$num.concats -1, lambda = dt.small.model$num.concats.pred, lower.tail = F)
+    pval.right = ppois(dt.small.model$num.concats, lambda = dt.small.model$num.concats.pred, lower.tail = F)
+    pval.right = ifelse(is.na(pval.right), 1, pval.right)
+    pval = ifelse(is.na(pval), 1, pval)
+    dt.small.model$pval = runif(nrow(dt.small.model), min = pval.right, max = pval)
+    
+    dt.small.model[, enrichment := num.concats / num.concats.pred]
+    return(dt.small.model)
+}
+
+    
 make_barplot = function(synergy_results, filename='plot.png', fdr.thresh=0.1) {
     ##synergy_results = synergy_results[cardinality > 3]
     barplot_dat = synergy_results[, total_annot := .N, by=c('annotation')]
@@ -2966,21 +2980,21 @@ derive_binsets_from_network = function(G.kant, pairwise, binned.concats, bins, r
     ##     return(binset)
     ## })
 
-    ##browser()
+
     dt.eig.sub = pbmclapply(unique.clusters, mc.cores = 5, function(cluster.id) {
         G.sub = subgraph(G.kant.10, dt.membership[cluster==cluster.id]$pair)
         sub.eig = eigen_centrality(G.sub, directed=TRUE)##, cutoff=-1)##, options)
         dt.subgraph = data.table(pairs = V(G.sub)$name)
         dt.subgraph$eigen = sub.eig[[1]]
         if(class(pairwise.trimmed$pair.hashes)=='integer'){
-             dt.subgraph$pairs = strtoi(dt.subgraph$pairs)
+            dt.subgraph$pairs = strtoi(dt.subgraph$pairs)
         }
         setorder(dt.subgraph, -eigen)
         dt.eig.sub = merge(dt.subgraph, pairwise.trimmed[, c('pair.hashes','agg')], by.x='pairs', by.y='pair.hashes')
         dt.eig.sub$cluster = cluster.id
         return(dt.eig.sub)
     })
-
+    browser()
     dt.eig.sub.agg = rbindlist(dt.eig.sub)
     dt.eig.sub.agg[, max.eig := max(eigen), by='cluster']
     seeds = dt.eig.sub.agg[eigen == max.eig]
@@ -2996,6 +3010,7 @@ derive_binsets_from_network = function(G.kant, pairwise, binned.concats, bins, r
     binsets.gr = expand_seeds(seeds, dist.decay.test, pairwise, all.pairs.tested=NULL, bins, fdr.thresh=fdr.thresh, pval.thresh=pval.thresh, expansion.cutoff=expansion.cutoff)
     binsets.dt = gr2dt(binsets.gr)
 
+
     
     ## bins = dist.decay.test[pair.hashes=='c(2547, 2552)']
     ## setorder(asdf, -relative.risk)
@@ -3008,6 +3023,14 @@ derive_binsets_from_network = function(G.kant, pairwise, binned.concats, bins, r
     ## binsets.gr = bins[binsets.dt$binid]
     ## ##binsets.gr$bid = binsets.dt$bid
     ## ##binsets.gr$binid = binsets.dt$binid
+
+###For filtering highly contacted bins
+##This is quite important    
+    binned.concats[, bincount := .N, by='binid']
+    thresh = quantile(unique(binned.concats, by='binid')$bincount, 0.9999) ###Remove very highly mapped bins
+    binned.concats = binned.concats[bincount < thresh]
+    
+    
     
     concat.merge = merge(binned.concats, binsets.dt, by='binid', allow.cartesian=TRUE)
     concat.count = concat.merge[, .N, by=c('cid','bid')]
@@ -3027,9 +3050,6 @@ derive_binsets_from_network = function(G.kant, pairwise, binned.concats, bins, r
     contacted.concatemers = dt2gr(contacted.concatemers)
     contacted.concatemers$chid = contacted.concatemers$bid
     
-   ## dt = gr2dt(contacted.concatemers)
-    
-    ##browser()
     new.binsets = rebin_community(contacted.concatemers, unique(concat.contacts$bid), resolution=10000, rebin_thresh=0.85)
 
     
@@ -3040,8 +3060,6 @@ derive_binsets_from_network = function(G.kant, pairwise, binned.concats, bins, r
 
     new.binsets = dt2gr(new.binsets.dt)
     chrom = Chromunity(binsets=dt2gr(new.binsets.dt), concatemers=contacted.concatemers, meta=data.table())
-    ##chrom = Chromunity(binsets=new.binsets, concatemers=GRanges(), meta=data.table())
-    ##saveRDS(chrom, 'GENOME_WIDE_DIST_DECAY_CHROM_REP_25RR.rds')
     return(chrom)
 
 }
@@ -3584,7 +3602,7 @@ symmetry_check = function(scored.annotate, synergy_results_scored, binsets) {
 
     ##browser()
     symmetry_syn[, strict.synergy := FALSE]
-    symmetry_syn[fdr.x<0.1 & symmetry.p.value > 0.1  & coverage > 0.1 & is.dispersed==TRUE, strict.synergy := TRUE] ###the only goood good
+    symmetry_syn[fdr.x<0.1 & symmetry.p.value > 0.1  & coverage > 0.1 & is.dispersed==TRUE & fdr.y > 0.1, strict.synergy := TRUE] ###the only goood good
     ##symmetry_syn[fdr.x<0.1 & symmetry.p.value > 0.1, strict.synergy := TRUE] ###the only goood good
 
     symmetry_syn[strict.synergy==FALSE, fdr.x := 1]
@@ -3909,25 +3927,36 @@ plot_concatemer_histogram = function(concats.gr, filename='plot.pdf') {
 
 
 
-plot_model_output = function(dt.small.model, pair.hash, bins, plotname='plot.pdf', max.y=NULL, cluster=NULL) {
-    grange.out = grange_model_prediction(dt.small.model, pair.hash, bins, cluster=cluster)
+plot_model_output = function(dt.small.model, pair.hash, bins, plotname='plot.pdf', max.y=NULL, cluster=NULL, view_range=NULL, fdr.thresh=0.25, pairwise=NULL) {
+    grange.out = grange_model_prediction(dt.small.model, pair.hash, bins, pairwise, cluster=cluster, fdr.thresh=fdr.thresh)
 
     model.gr = grange.out[[1]]
     ##view_range = grange.out[[2]]
    
     viewpoint = grange.out[[3]]
-    view_range = viewpoint[[1]] + 1e6
+
+    if(is.null(view_range)) {
+        ##view_range = viewpoint[[1]] + 1e6
+        view_range = (model.gr %Q% (fdr<fdr.thresh) + 1e6) %>% gr.reduce
+        dt.range = rbind(gr2dt(view_range), gr2dt(viewpoint[[1]]), gr2dt(viewpoint[[2]]), fill=TRUE)
+        view_range = dt2gr(dt.range)
+    }
     if(is.null(max.y)){
         max.y = model.gr$num.concats %>% max
     }
 
     model.gr$log.pval = -log10(model.gr$pval)
-    
-    ppdf(plot(c(gTrack(model.gr, y.field='relative.risk', bars=T, name='log2(O/E)', y0=0), gTrack(model.gr, y.field='log.pval', bars=T, name='-log10(pval)'), gTrack(model.gr, y.field='num.concats.pred', bars=T, name='prediction', y1=max.y), gTrack(model.gr, y.field='num.concats', bars=T, name='actual', y1=max.y), gTrack(viewpoint, name='viewpoint'), gTrack(features$h27ac, y1 = 100, y.field = "V9", bars = T, height = 2, name='H3K27ac peaks')), view_range+5e6), plotname)
+
+    if(is.null(cluster)){
+        ppdf(plot(c(gTrack(model.gr, y.field='relative.risk', bars=T, name='log2(O/E)', y0=0), gTrack(model.gr, y.field='log.pval', bars=T, name='-log10(pval)'), gTrack(model.gr, y.field='num.concats.pred', bars=T, name='prediction', y1=max.y), gTrack(model.gr, y.field='num.concats', bars=T, name='actual', y1=max.y), gTrack(viewpoint, name='viewpoint'), gTrack(features$h27ac, y1 = 100, y.field = "V9", bars = T, height = 2, name='H3K27ac peaks')), view_range+1e6), plotname)
+    } else {
+        ppdf(plot(c(gTrack(model.gr, y.field='relative.risk', bars=T, name='log2(O/E)', y0=0), gTrack(viewpoint, name='viewpoint')), view_range+5e6), plotname)
+    }
+    return(list(view_range, max.y))
 }
 
 
-grange_model_prediction = function(dt.small.model, pair.hash, bins, pairwise, cluster=NULL){
+grange_model_prediction = function(dt.small.model, pair.hash, bins, pairwise=NULL, cluster=NULL, fdr.thresh=0.25){
 
     if(!is.null(cluster)){
         dt.small.model$pair.hashes.archive = dt.small.model$pair.hashes ##goofy
@@ -3936,6 +3965,8 @@ grange_model_prediction = function(dt.small.model, pair.hash, bins, pairwise, cl
         dt.small.model = unique(dt.small.model, by=c('cluster','binterrogate'))
         pair.hash = cluster
     }
+    viewpoint.bins = c(dt.small.model[pair.hashes==pair.hash]$i, dt.small.model[pair.hashes==pair.hash]$j) %>% unique
+    dt.small.model = dt.small.model[!(binterrogate %in% viewpoint.bins)]
     model.gr = bins[dt.small.model[pair.hashes==pair.hash]$binterrogate]
     model.gr$num.concats = dt.small.model[pair.hashes==pair.hash]$num.concats
     model.gr$num.concats.pred = dt.small.model[pair.hashes==pair.hash]$num.concats.pred
@@ -3945,8 +3976,11 @@ grange_model_prediction = function(dt.small.model, pair.hash, bins, pairwise, cl
     model.gr$fdr = dt.small.model[pair.hashes==pair.hash]$fdr
     
     dt.small.model.copy = dt.small.model[pair.hashes == pair.hash]# & pval > 0.05, relative.risk := 0]
-    dt.small.model.copy[fdr > 0.1, relative.risk := 0]
+    dt.small.model.copy[fdr > fdr.thresh, relative.risk := 0]
 
+    ##version with pval thresh
+    ##dt.small.model.copy[pval > 0.05, relative.risk := 0]
+    
     model.gr$relative.risk = dt.small.model.copy$relative.risk
     ##model.gr$num.concats = dt.small.model[pair.hashes==pair.hash]$num.concats
     model.gr$pval = dt.small.model[pair.hashes==pair.hash]$pval
@@ -3956,7 +3990,7 @@ grange_model_prediction = function(dt.small.model, pair.hash, bins, pairwise, cl
         all.bins = merge(pairwise[, c('pair.hashes','agg')], dt.small.model[pair.hashes==pair.hash, c('pair.hashes.archive')], by.x='pair.hashes', by.y='pair.hashes.archive')
         all.bins.unlist = all.bins[, .(bins = unlist(agg))]
         all.bins = all.bins.unlist$bins %>% unique
-        viewpoint = GRangesList(bins[all.bins])
+        viewpoint = split(bins[all.bins], bins[all.bins]$binid) %>% unname
     } else {
         bin1 = bins[unique(dt.small.model[pair.hashes==pair.hash]$i)]
         bin2 = bins[unique(dt.small.model[pair.hashes==pair.hash]$j)]
@@ -4031,7 +4065,7 @@ evaluate_synergy_experimental = function(res, leave_out_concatemers, chid.to.tes
         stop("output folder does not exist")
     }
     if(is.null(chromosome)){
-        chromosome = c(paste0("chr", c(as.character(1:22), "X")))
+        chromosome = c(paste0("chr", c(as.character(1:22), "X", "Y"))) ###we should add the Y CHROMOSOME!!!
         all.bad = pbmclapply(chromosome, mc.preschedule=FALSE, function(chr) {
             bad.gr = muffle(load_bad_regions(chr))
             bad.dt = gr2dt(bad.gr)
@@ -4356,13 +4390,39 @@ evaluate_synergy_experimental = function(res, leave_out_concatemers, chid.to.tes
 }
 
 
+#' @name interchr_dist_decay_binsets
+#' @description
+#'
+#' This function 
+#' 
+#' 
+#' @param binsets GRanges of bins with fields $bid specifying binset id
+#' @param concatemers GRanges of monomers with fields seqnames, start, end, and $cid specifying concatemer id, which will be counted across each binset
+#' @param covariates Covariate object specifying numeric or interval covariates to merge with this binset
+#' @param k the max cardinality of sets to annotate from the power set of each binmer
+#' @param gg optional gGraph input specifying alternate distance function
+#' @param interchromosomal.dist numeric scalar of "effective" distance for inter chromosomal bins [1e8]
+#' @param verbose logical flag
+#' @param mc.cores integer how many cores to parallelize
+#' @param threads used to set number of data table threads to use with setDTthreads function, segfaults may occur if >1
+#' @author Aditya Deshpande, Marcin Imielinski
+#' @export
+#' @return data.table of sub-binsets i.e. k-power set of binsets annotated with $count field representing covariates, ready for fitting, **one row per binset
 
-interchr_dist_decay_binsets = function(concatemers, bins, training.chr = 'chr8', pair.thresh=50, numchunks=200, mask.bad.regions = TRUE, rr.thresh=1, fdr.thresh=0.1, pval.thresh=0.05, expansion.cutoff=0.5 folder=NULL, chromosome=NULL) {
+interchr_dist_decay_binsets = function(concatemers, resolution=50000, bins=NULL, interchromosomal.distance = 1e8, training.chr = 'chr8', pair.thresh=50, numchunks=200, mask.bad.regions = TRUE, rr.thresh=1, fdr.thresh=0.1, pval.thresh=0.05, expansion.cutoff=0.5, num.members=10, folder=NULL, chromosome=NULL, model=NULL, pairwise.trimmed=NULL, num.to.sample=500000) {
 
-    
+    if(is.null(chromosome)){
+        chromosome = c(paste0("chr", c(as.character(1:22), "X")))
+    }
+
+    if(is.null(bins)){
+        bins = gr.tile(hg_seqlengths(genome = "BSgenome.Hsapiens.UCSC.hg38::Hsapiens"), width=resolution) %Q% (seqnames %in% chromosome)
+    }
     bins$binid = 1:length(bins)
-    
-    model = train_dist_decay_model_nozero(concatemers %Q% (seqnames==training.chr), bins %Q% (seqnames==training.chr), numchunks=20)
+
+    if(is.null(model)){
+        model = train_dist_decay_model_nozero(concatemers %Q% (seqnames==training.chr), bins %Q% (seqnames==training.chr), numchunks=20)
+    }
     
     contact_matrix_unique = cocount(concatemers, bins = bins, by = 'read_idx')
     all.pairwise = contact_matrix_unique$dat
@@ -4371,6 +4431,7 @@ interchr_dist_decay_binsets = function(concatemers, bins, training.chr = 'chr8',
     
     concatemers$cid = concatemers$read_idx
     binned.concats = bin_concatemers(concatemers, bins, max.slice=1e6, mc.cores=5)
+
     dt.concats = unique(binned.concats[, c('cidi','binid')], by=c('cidi','binid'))
     dt.concats.sort = dt.concats[order(binid, cidi)]
     dt.concats.sort[, count := .N, by='cidi']
@@ -4380,10 +4441,15 @@ interchr_dist_decay_binsets = function(concatemers, bins, training.chr = 'chr8',
 
     ##choose subset of bin-pairs S by thresholding
     colnames(all.pairwise)[4] = 'pair.hashes'
-    pairwise.trimmed = all.pairwise[pair.value >= pair.thresh]
-    pairwise.trimmed[, dist := j-i]
-    pairwise.trimmed = pairwise.trimmed[dist > 1]
 
+    ##browser()
+    ##allow option of passing in pairwise trimmed manually 
+    if(is.null(pairwise.trimmed)) {
+        pairwise.trimmed = all.pairwise[pair.value >= pair.thresh]
+        pairwise.trimmed[, dist := j-i]
+        pairwise.trimmed = pairwise.trimmed[dist > 1]
+    }
+     
     if(mask.bad.regions==TRUE) {
         chromosome = c(paste0("chr", c(as.character(1:22), "X")))
         all.bad = pbmclapply(chromosome, mc.preschedule=FALSE, function(chr) {
@@ -4408,15 +4474,25 @@ interchr_dist_decay_binsets = function(concatemers, bins, training.chr = 'chr8',
     pairwise.chunks = split(pairwise.trimmed, by='group')
 
     ##oh this isn't even bad! memory-wise
+    ##browser()
+    pairwise.chunk = pairwise.chunks[[1]]
+
     scored.chunks = pbmclapply(pairwise.chunks, mc.cores = 5, function(pairwise.chunk) {
-        annot.chunk = count_3way_contacts(pairwise.chunk, dt.concats.sort, all.pairwise, bins)
+        annot.chunk = count_3way_contacts(pairwise.chunk, dt.concats.sort, all.pairwise, bins, resolution=resolution, interchromosomal.distance = interchromosomal.distance)
         if(mask.bad.regions == TRUE){
             annot.chunk = annot.chunk[!(binterrogate %in% bad.bins$binid)]
         }
-        dt.small.scored = score_distance_decay(annot.chunk, model)
+        dt.small.scored = score_distance_decay_poisson(annot.chunk, model)
         return(dt.small.scored)
     })
 
+    ##spike.train.set = readRDS('spiked_train_set.rds')
+    ##model = glm.nb(formula = fm, data=spike.train.set[, c('num.concats','value.a.ratio','value.b.ratio')], control=glm.control(maxit=500))
+    ##genome.wide.dist.decay.2 = score_distance_decay(genome.wide.dist.decay, model)
+    ##genome.wide.dist.decay = genome.wide.dist.decay.2
+    ##browser()
+    ##fdr.thresh=.25
+    
     genome.wide.dist.decay = rbindlist(scored.chunks)
 
     
@@ -4427,24 +4503,24 @@ interchr_dist_decay_binsets = function(concatemers, bins, training.chr = 'chr8',
     ##Original code (strange)
     ##genome.wide.dist.decay[, relative.risk := log2(abs(num.concats - num.concats.pred))]
     ##genome.wide.dist.decay$sidi = 1:dim(genome.wide.dist.decay)[[1]]
-
+    
     genome.wide.dist.decay$fdr = signif(p.adjust(genome.wide.dist.decay$pval, "BH"), 2)
     trimmed.dist.decay = genome.wide.dist.decay[fdr<fdr.thresh]
     
     bin.pair.network = create_bin_pair_network_efficient(all.pairwise, trimmed.dist.decay, rr.thresh=0)
 
+    ##browser()
     ###rr.thresh!!
     if(!is.null(folder))
         saveRDS(genome.wide.dist.decay, paste0(folder,'dist_decay_archive.rds'))
 
-    chrom = derive_binsets_from_network(bin.pair.network, pairwise=all.pairwise, binned.concats=binned.concats, bins=bins, rr.thresh=0, dist.decay.test=genome.wide.dist.decay[pval < pval.thresh], all.pairs.tested=NULL, pairwise.trimmed=pairwise.trimmed, expansion.cutoff = expansion.cutoff, pval.thresh = pval.thresh, fdr.thresh = fdr.thresh)
-
+    chrom = derive_binsets_from_network(bin.pair.network, pairwise=all.pairwise, binned.concats=binned.concats, bins=bins, rr.thresh=0, dist.decay.test=genome.wide.dist.decay[pval < pval.thresh], all.pairs.tested=NULL, pairwise.trimmed=pairwise.trimmed, expansion.cutoff = expansion.cutoff, pval.thresh = pval.thresh, fdr.thresh = fdr.thresh, num.members=num.members)
     
     return(chrom)
 }
 
 ##subsetted to training chr
-train_dist_decay_model_nozero = function(concatemers, bins, pair.thresh=50, numchunks=200){
+train_dist_decay_model_nozero = function(concatemers, bins, pair.thresh=50, numchunks=200, num.to.sample=500000, pairs.to.sample = 10000, mode='poisson'){
     contact_matrix_unique = cocount(concatemers, bins = bins, by = 'read_idx')
     all.pairwise = contact_matrix_unique$dat
     all.pairwise$id = 1:dim(all.pairwise)[[1]]
@@ -4455,7 +4531,7 @@ train_dist_decay_model_nozero = function(concatemers, bins, pair.thresh=50, numc
     dt.concats = unique(binned.concats[, c('cidi','binid')], by=c('cidi','binid'))
     dt.concats.sort = dt.concats[order(binid, cidi)]
     dt.concats.sort[, count := .N, by='cidi']
-    
+    dt.concats.sort
 
 ##pairwise = contact_matrix_unique$dat
     
@@ -4469,12 +4545,11 @@ train_dist_decay_model_nozero = function(concatemers, bins, pair.thresh=50, numc
     unique.pairs = pairwise.trimmed$pair.hashes %>% unique
         
     #subsetting to make this more efficient
-    if(length(unique.pairs) > 10000){
-        unique.pairs = unique.pairs[sample(10000)]
+    if(length(unique.pairs) > pairs.to.sample){
+        unique.pairs = unique.pairs[sample(pairs.to.sample)]
         pairwise.trimmed = pairwise.trimmed[pair.hashes %in% unique.pairs]
     }
 
-    numchunks=20
     pair.splitting = data.table(unique.pairs, group=ceiling(runif(length(unique.pairs))*numchunks))
     pairwise.trimmed$group = pair.splitting$group
 
@@ -4484,30 +4559,48 @@ train_dist_decay_model_nozero = function(concatemers, bins, pair.thresh=50, numc
     pairwise.chunks = split(pairwise.trimmed, by='group')
 
 ##oh this isn't even bad! memory-wise
+
     scored.chunks = pbmclapply(pairwise.chunks, mc.cores = 5, function(pairwise.chunk) {
         annot.chunk = count_3way_contacts(pairwise.chunk, dt.concats.sort, all.pairwise, bins)
         return(annot.chunk)
     })
     dist.decay.train = rbindlist(scored.chunks)
 
+    ##browser()
+    
     print('training model')
     covariates = c('value.a.ratio','value.b.ratio')
     fmstring = paste('num.concats ~', paste(paste0('log(', covariates, ')', collapse = ' + ')))
-        ##fmstring = paste0(fmstring, " + ", "offset(log(total.concats))") this sometimes does 
+    ##fmstring = paste0(fmstring, " + ", "offset(log(total.concats))") ##this sometimes does 
+
     fm = formula(fmstring)
 
 
         ##browser()
-     num.to.sample = 500000
-     if(num.to.sample > dim(dist.decay.train)[[1]]) {
-         num.to.sample = dim(dist.decay.train)[[1]]
-     }
+     ##num.to.sample = 500000
+     ##if(num.to.sample > dim(dist.decay.train)[[1]]) {
+     ##    num.to.sample = dim(dist.decay.train)[[1]]
+     ##}
 
-    
-    close.subset = dist.decay.train[dist.a <= 50 & dist.b <= 50][sample(.N, num.to.sample/2)]
-    far.subset = dist.decay.train[dist.a > 50 & dist.b > 50][sample(.N, num.to.sample/8)]
-    train.subset = rbind(close.subset, far.subset)
-    model = glm.nb(formula = fm, data=train.subset[, c('num.concats','value.a.ratio','value.b.ratio')], control=glm.control(maxit=500))
+
+     ##total.concats = dist.decay.train[(dist.a < 50 | dist.b < 50), .(total.concats = sum(num.concats)), by=c('pair.hashes')]
+     ##dist.decay.train = merge(dist.decay.train, total.concats, by='pair.hashes')
+
+    if(num.to.sample > dim(dist.decay.train)[[1]]/2) {
+        train.subset = dist.decay.train[dist.a <= 50 & dist.b <= 50]
+    } else { 
+        close.subset = dist.decay.train[dist.a <= 50 & dist.b <= 50][sample(.N, num.to.sample/2)]
+        far.subset = dist.decay.train[dist.a > 50 & dist.b > 50][sample(.N, num.to.sample/8)]
+        train.subset = rbind(close.subset, far.subset)
+    }
+
+    ##browser()
+    if(mode=='poisson'){
+        model = glm(formula = fm, data=train.subset[, c('num.concats','value.a.ratio','value.b.ratio')], control=glm.control(maxit=500), family='poisson')
+    } else {
+        model = glm.nb(formula = fm, data=train.subset[, c('num.concats','value.a.ratio','value.b.ratio')], control=glm.control(maxit=500))
+    }
+
     return(model)
     
 }
@@ -4564,10 +4657,10 @@ count_3way_track = function(pairwise.trimmed, dt.concats.sort, all.pairwise, bin
 
 
 
-count_3way_contacts = function(pairwise.trimmed, dt.concats.sort, all.pairwise, bins) {
+count_3way_contacts = function(pairwise.trimmed, dt.concats.sort, all.pairwise, bins, resolution=50000, interchromosomal.distance = 1e8) {
     pairwise.trimmed$agg = do.call(Map, c(f = c, pairwise.trimmed[, c('i','j')]))
 
-    asdf = merge(pairwise.trimmed[i!=j], dt.concats.sort, by.x='i', by.y='binid')
+    asdf = merge(pairwise.trimmed[i!=j], dt.concats.sort, by.x='i', by.y='binid', allow.cartesian=TRUE)
     asdf.2 = merge(asdf, dt.concats.sort, by.x=c('j','cidi'), by.y=c('binid','cidi'))
     mergerious = merge(asdf.2[, c('id','cidi','i','j','agg')], dt.concats.sort, by='cidi')
     mergerious = mergerious[binid != i & binid != j]
@@ -4638,8 +4731,9 @@ count_3way_contacts = function(pairwise.trimmed, dt.concats.sort, all.pairwise, 
 
 ## ###interchromosomal distance
 
-    dt.sub[chr.i != chr.binterrogate, dist.i := 2000]
-    dt.sub[chr.j != chr.binterrogate, dist.j := 2000]
+    inter.dist = interchromosomal.distance / resolution
+    dt.sub[chr.i != chr.binterrogate, dist.i := inter.dist]
+    dt.sub[chr.j != chr.binterrogate, dist.j := inter.dist]
 
 
     dt.sub[, chr.i := NULL]
@@ -4924,7 +5018,7 @@ count_3way_contacts = function(pairwise.trimmed, dt.concats.sort, all.pairwise, 
 ## }
 
 
-create_bin_pair_network_efficient = function(all.pairwise, genome.wide.dist.decay, rr.thresh=2.5) {
+create_bin_pair_network_efficient = function(all.pairwise, genome.wide.dist.decay, rr.thresh=0) {
 
 
     all.pairwise.trimmed.2 = all.pairwise %>% copy
@@ -4951,7 +5045,8 @@ create_bin_pair_network_efficient = function(all.pairwise, genome.wide.dist.deca
 ##all.neighbors$sidi = map(all.neighbors$sidi, sort)
 ##all.neighbors$hashes = all.neighbors$sidi %>% unname %>%  paste0
 ##all.neighbors$hashes = map(all.neighbors$sidi, unname) %>% paste0
-##all.neighbors = unique(all.neighbors, by=c('i','j','binterrogate'))
+##browser()
+    ##all.neighbors = unique(all.neighbors, by=c('i','j','binterrogate'))
 
     all.neighbors$pair.hashes.x = all.neighbors$pair.hashes.x %>% factor
     all.neighbors$pair.hashes.y = all.neighbors$pair.hashes.y %>% factor
@@ -4961,12 +5056,20 @@ create_bin_pair_network_efficient = function(all.pairwise, genome.wide.dist.deca
 }
 
 
-run_interchr_dist_decay = function(concatemers, bins, folder, rr.thresh=1, pair.thresh=50, chromosome=NULL) {
-    unique_read_idx = concatemers$cid %>% unique
+run_interchr_dist_decay = function(concatemers, folder, bins=NULL, pair.thresh=50, chromosome=NULL, training.chr='chr8', resolution=50000, rr.thresh=0, fdr.thresh=0.1, pval.thresh=0.05, expansion.cutoff=0.5, num.members=10) {
+
+    if(is.null(chromosome)){
+        chromosome = c(paste0("chr", c(as.character(1:22), "X")))
+    }
+
+    concatemers = concatemers %Q% (seqnames %in% chromosome)
+    
+    unique_read_idx = concatemers$read_idx %>% unique
     training.idx = sample(unique_read_idx, length(unique_read_idx)/2)
     training.gr = concatemers %Q% (read_idx %in% training.idx)
     test.gr = concatemers %Q% !(read_idx %in% training.idx)
-    chrom = interchr_dist_decay_binsets(training.gr, bins, rr.thresh=rr.thresh, pair.thresh=pair.thresh, folder=folder, training.chr=chromosome)
+
+    chrom = interchr_dist_decay_binsets(training.gr, bins=bins, rr.thresh=rr.thresh, pair.thresh=pair.thresh, folder=folder, training.chr=training.chr, resolution=resolution, fdr.thresh=fdr.thresh, pval.thresh=pval.thresh, expansion.cutoff=expansion.cutoff, num.members=num.members)
     
     dir.create(folder)
     saveRDS(chrom, paste0(folder, '/chromunity_results.rds'))
