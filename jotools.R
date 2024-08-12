@@ -2919,7 +2919,7 @@ annotate_and_score_distance_decay = function(iterative.registry, iterative.regis
 
 
 derive_binsets_from_network = function(G.kant, pairwise, binned.concats, bins, rr.thresh = 0, dist.decay.test=NULL, all.pairs.tested=NULL, num.members=20, pairwise.trimmed=pairwise, expansion.cutoff = 0.5, pval.thresh = 0.05, fdr.thresh=0.1) {
-
+##num.members=2
     ##G.kant = bin.pair.network
     
     pairwise.trimmed$agg = do.call(Map, c(f = c, pairwise.trimmed[, c('i','j')]))
@@ -2994,8 +2994,15 @@ derive_binsets_from_network = function(G.kant, pairwise, binned.concats, bins, r
         dt.eig.sub$cluster = cluster.id
         return(dt.eig.sub)
     })
-    browser()
-    dt.eig.sub.agg = rbindlist(dt.eig.sub)
+
+    
+    if(length(unique.clusters) == 1) {
+        dt.eig.sub.agg = rbindlist(dt.eig.sub[[1]])
+        dt.eig.sub.agg$eigen = 1
+    } else {
+        dt.eig.sub.agg = rbindlist(dt.eig.sub)
+    }
+        
     dt.eig.sub.agg[, max.eig := max(eigen), by='cluster']
     seeds = dt.eig.sub.agg[eigen == max.eig]
 
@@ -3009,7 +3016,7 @@ derive_binsets_from_network = function(G.kant, pairwise, binned.concats, bins, r
     ##dist.decay.test = dist.decay[pval<0.05]
     binsets.gr = expand_seeds(seeds, dist.decay.test, pairwise, all.pairs.tested=NULL, bins, fdr.thresh=fdr.thresh, pval.thresh=pval.thresh, expansion.cutoff=expansion.cutoff)
     binsets.dt = gr2dt(binsets.gr)
-
+    binsets.dt$chid = binsets.dt$bid
 
     
     ## bins = dist.decay.test[pair.hashes=='c(2547, 2552)']
@@ -3028,11 +3035,13 @@ derive_binsets_from_network = function(G.kant, pairwise, binned.concats, bins, r
 ##This is quite important    
     binned.concats[, bincount := .N, by='binid']
     thresh = quantile(unique(binned.concats, by='binid')$bincount, 0.9999) ###Remove very highly mapped bins
-    binned.concats = binned.concats[bincount < thresh]
+    standard.dev = sd(unique(binned.concats, by='binid')$bincount)
+    binned.concats = binned.concats[bincount < (thresh + standard.dev)]
     
     
-    
-    concat.merge = merge(binned.concats, binsets.dt, by='binid', allow.cartesian=TRUE)
+    binned.concats[, bid := NULL]
+    binned.concats[, chid := NULL]
+    concat.merge = merge(binned.concats, binsets.dt[, c('binid','bid')], by='binid', allow.cartesian=TRUE)
     concat.count = concat.merge[, .N, by=c('cid','bid')]
 
 ##    binsets.dt
@@ -3049,6 +3058,7 @@ derive_binsets_from_network = function(G.kant, pairwise, binned.concats, bins, r
     contacted.concatemers = merge(binned.concats, concat.contacts, by='cid', all.y=TRUE, allow.cartesian=TRUE)
     contacted.concatemers = dt2gr(contacted.concatemers)
     contacted.concatemers$chid = contacted.concatemers$bid
+
     
     new.binsets = rebin_community(contacted.concatemers, unique(concat.contacts$bid), resolution=10000, rebin_thresh=0.85)
 
@@ -3058,7 +3068,7 @@ derive_binsets_from_network = function(G.kant, pairwise, binned.concats, bins, r
     new.binsets.dt[, numbins := .N, by='chid']
     new.binsets.dt = new.binsets.dt[width<200000 & numbins<500] ##I will hardcode this as limit: something has gone horribly wrong if you reach this
 
-    new.binsets = dt2gr(new.binsets.dt)
+    new.binsets = dt2gr(new.binsets.dt[numbins > 2])
     chrom = Chromunity(binsets=dt2gr(new.binsets.dt), concatemers=contacted.concatemers, meta=data.table())
     return(chrom)
 
@@ -4060,7 +4070,6 @@ aggregate_synergy_results = function(dir, toplevel=TRUE, strict.check=FALSE) {
 
 evaluate_synergy_experimental = function(res, leave_out_concatemers, chid.to.test, chromosome = NULL, filter_binsets = TRUE, folder = NULL, rebin_thresh = 0.85, mc.cores = 20, numchunks = mc.cores*200 + 1, dont_rebin=FALSE, sub.binset.order=3, resolution=1e4, remove.bad=TRUE) {
 
-
     if (!dir.exists(folder)) {
         stop("output folder does not exist")
     }
@@ -4085,24 +4094,6 @@ evaluate_synergy_experimental = function(res, leave_out_concatemers, chid.to.tes
     gc_cov = covariate(name = c("gc"), type = c("numeric"), field = c("score"), data = cov_list)
     gc.cov = gc_cov
 
-    ##handle all that rebinning shit UPSTREAM please thank you 
-    
-    ## this.dat.chrom = data.table()
-    ## if(dont_rebin) this.chrom = gr2dt(concatemers)
-    ## if (filter_binsets) {
-    ##     this.chrom = this.chrom[support > summary(unique(this.chrom[, .(support, chid)])$support)[3]]####filtering out all bins below median support
-    ## }
-    ## this.chrom.w = unique(chid.to.test)
-    ## if(dont_rebin) {
-    ##     print('yay')
-    ##     this.chrom.dt = this.chrom
-    ## } else {
-    ##     this.chrom.dt = rebin_community(res$concatemers, this.chrom.w, resolution=resolution)
-    ## }
-
-    ####
-
-    ##browser()
     if(!(class(res) == 'data.table'))
         this.chrom.dt = gr2dt(res$binsets)
     else
@@ -4393,23 +4384,26 @@ evaluate_synergy_experimental = function(res, leave_out_concatemers, chid.to.tes
 #' @name interchr_dist_decay_binsets
 #' @description
 #'
-#' This function 
+#' This function performs the bin-set nomination procedure based on modeling the distance decay of higher order interaction frequencies from pairs of bins
 #' 
 #' 
-#' @param binsets GRanges of bins with fields $bid specifying binset id
 #' @param concatemers GRanges of monomers with fields seqnames, start, end, and $cid specifying concatemer id, which will be counted across each binset
-#' @param covariates Covariate object specifying numeric or interval covariates to merge with this binset
-#' @param k the max cardinality of sets to annotate from the power set of each binmer
-#' @param gg optional gGraph input specifying alternate distance function
+#' @param resolution integer specifying the bin width to use for the distance decay model
+#' @param bins GRanges of bins which specify the 
 #' @param interchromosomal.dist numeric scalar of "effective" distance for inter chromosomal bins [1e8]
+#' @param training.chr Chromosome to use for training distance decay model
+#' @param pair.thresh Pairwise contact value used as threshold for considering pairs in analysis
+#' @param numchunks Number of chunks to create in annotating higher order distance decay
+#' @param mask.bad.regions Will load human telomeres/centromeric regions and remove them from annotated distance decay
+#' 
 #' @param verbose logical flag
 #' @param mc.cores integer how many cores to parallelize
 #' @param threads used to set number of data table threads to use with setDTthreads function, segfaults may occur if >1
-#' @author Aditya Deshpande, Marcin Imielinski
+#' @author Jameson Orvis
 #' @export
 #' @return data.table of sub-binsets i.e. k-power set of binsets annotated with $count field representing covariates, ready for fitting, **one row per binset
 
-interchr_dist_decay_binsets = function(concatemers, resolution=50000, bins=NULL, interchromosomal.distance = 1e8, training.chr = 'chr8', pair.thresh=50, numchunks=200, mask.bad.regions = TRUE, rr.thresh=1, fdr.thresh=0.1, pval.thresh=0.05, expansion.cutoff=0.5, num.members=10, folder=NULL, chromosome=NULL, model=NULL, pairwise.trimmed=NULL, num.to.sample=500000) {
+interchr_dist_decay_binsets = function(concatemers, resolution=50000, bins=NULL, interchromosomal.distance = 1e8, training.chr = 'chr8', pair.thresh=50, numchunks=200, mask.bad.regions = TRUE, fdr.thresh=0.1, pval.thresh=0.05, expansion.cutoff=0.5, num.members=10, folder=NULL, chromosome=NULL, model=NULL, pairwise.trimmed=NULL, num.to.sample=500000) {
 
     if(is.null(chromosome)){
         chromosome = c(paste0("chr", c(as.character(1:22), "X")))
@@ -4437,8 +4431,6 @@ interchr_dist_decay_binsets = function(concatemers, resolution=50000, bins=NULL,
     dt.concats.sort[, count := .N, by='cidi']
     
 
-##pairwise = contact_matrix_unique$dat
-
     ##choose subset of bin-pairs S by thresholding
     colnames(all.pairwise)[4] = 'pair.hashes'
 
@@ -4463,7 +4455,9 @@ interchr_dist_decay_binsets = function(concatemers, resolution=50000, bins=NULL,
         pairwise.trimmed = pairwise.trimmed[!(j %in% bad.bins$binid)]
     }
 
-    ##pairwise.trimmed$id = 1:dim(pairwise.trimmed)[[1]]
+
+    ###Should choose numchunks automatically here
+    
     unique.pairs = pairwise.trimmed$pair.hashes %>% unique
     pair.splitting = data.table(unique.pairs, group=ceiling(runif(length(unique.pairs))*numchunks))
     pairwise.trimmed$group = pair.splitting$group
@@ -5108,4 +5102,192 @@ calculate_binned_contact_count = function(concats.gr, bins.gr) {
     unique.concats = unique(dedupe.concats, by='read_idx')
     binned.contact.count = sum(unique.concats$num.contacts)
     return(binned.contact.count)
+}
+
+shuffle_concatemers_spiked = function(concatemers, contact_matrix, spike.set, strength=0.1, noise.parameter = 10000, resolution=10000, trim=TRUE, interval.width=1000) {
+    A = contact_matrix$mat %>% as.matrix
+    rownames(A) <- NULL
+    colnames(A) <- NULL
+    A[cbind(1:nrow(A), 1:nrow(A))] = 0
+    A = A + t(A)
+    An = A 
+    ##browser()
+    An = round(1+10*An/min(An[An>0]))  ##can you remove this background 1 value? does this change anything. peculiar     An = round(1+10*An/min(An[An>0]))
+    edges = as.data.table(which(An != 0, arr.ind = TRUE))[ , val := An[which(An!=0)]][, .(row = rep(row, val), col = rep(col, val))]
+     ##
+    G = graph.edgelist(edges[, cbind(row, col)])
+    ##G.2 = graph.adjacency(An)#, directed=FALSE)
+    
+##    browser()
+    concats.binned = bin_concatemers(concatemers, contact_matrix$gr)
+    concats.dt = concats.binned
+    concats.dt = unique(concats.dt, by=c('binid','cidi')) ###dedupe!!
+
+    concat.counts = concats.dt[, new.count := .N, by='read_idx']
+
+
+    card = unique(concat.counts[, .(read_idx, new.count)])
+
+    this.steps = sum(card$new.count)
+
+    row.labels = 1:dim(An)[1]
+    start.index = row.labels[rowSums(An)>1]
+    
+    RW = random_walk(G, start = start.index, steps = sum(card$new.count)) %>% as.numeric
+    ##browser()
+    ##
+    ##rm(G)
+    ##rm(edges)
+    ##gc()
+
+    ###find set of concatemers which already include one of the spike set 
+    ##spike.set = c(7200, 7210, 7220, 7230)
+
+    out = contact_matrix$gr[RW] %>% gr2dt()
+    ##browser()
+    
+    out = out[1:sum(card$new.count)]
+    out$read_idx = card[, rep(read_idx, new.count)] 
+
+    out[, cardinality := .N, by='read_idx']
+##    out = gr2dt(dt2gr(out) - ()) ###Setting width of each monomer to be arbitrarily 1000
+    ##browser()
+    
+    ##spike.concatemers = spike.set
+    ##spikable.concats = out[cardinality > 1 & binid %in% spike.set$binid]$read_idx %>% unique  ##no concatemer which only hit a bin-set
+    ##concats.to.spike = sample(spikable.concats, number.to.add)
+
+    ##browser()
+
+
+
+    ###Split by whatever random binsets you want to add here
+
+    dt = gr2dt(spike.set %&% contact_matrix$gr)[, count := .N, by='bid']
+    spike.set = dt2gr(dt[count > 2])
+    
+    spike.set$binid = gr.match(spike.set, contact_matrix$gr)
+    spike.set$chid = spike.set$chid %>% as.character
+    binsets.to.add = split(spike.set, spike.set$chid)
+    out[, c('query.id','tile.id') := NULL]
+
+###We are going to choose random position within bin to begin monomer from
+###And then create fixed width monomer
+    
+    out$rowid = 1:dim(out)[[1]]
+    out[, new.start.interval := sample(resolution - interval.width, 1), by='rowid']
+    out[, start := start + new.start.interval]
+    out[, end := start + interval.width]
+    
+
+    ##spike.set.gr = binsets.to.add$rand_15
+
+    spikes = pbmclapply(binsets.to.add, mc.cores = 5, function(spike.set.gr) {
+
+        ##number.to.add = choose(spike.set.gr[1]$cardinality, 3) * strength
+##        spike.set.gr = binsets.to.add$rand_10
+
+        binset.rand = spike.set.gr %>% gr2dt
+        binset.rand$bid=1
+        binset.rand$index = 1:dim(binset.rand)[[1]]
+        power = binset.rand[, powerset(index, 3, 3), by=bid]
+
+        
+        num.concats = merge(binset.rand, out, by='binid')$read_idx %>% unique %>% length
+        number.to.add = num.concats * strength
+        print(number.to.add)
+        
+        power[, size := .N, by=c('setid','bid')]
+        size3 = unique(power[size==3], by=c('bid','setid'))
+        size3.samp = sample(size3$setid, number.to.add, replace=TRUE)
+        samp = data.table(size3.samp)
+        colnames(samp) = 'setid'
+        samp.binned = merge(samp, power, by='setid', allow.cartesian=TRUE)
+        spike.concats = binset.rand[samp.binned$item]
+
+
+        
+
+        ###choose spike location randomly from bin-set given
+        spike.concats$rowid = 1:dim(spike.concats)[[1]]
+        spike.concats[, new.start.interval := sample(resolution - interval.width, 1), by='rowid']
+        spike.concats[, start := start + new.start.interval]
+        spike.concats[, end := start + interval.width]
+
+        spike.concats.gr = dt2gr(spike.concats)
+
+        dt.spike = gr2dt(spike.concats.gr)
+        dt.spike$spike.id = rep(1:dim(samp)[[1]], each=3)
+        dt.spike.2 = merge(out, dt.spike, by='binid', allow.cartesian=TRUE)
+        sample.spike = dt.spike.2[, .(read_idx = sample(read_idx, 5)), by='spike.id'] ###almost guarantees we don't double select a concatemer
+        sample.spike = sample.spike %>% unique(by='read_idx') %>% unique(by='spike.id')
+        sample.spike = merge(sample.spike, dt.spike.2[, c('spike.id','read_idx','binid')], by=c('spike.id','read_idx'))
+        sample.spike = sample.spike %>% unique(by='read_idx') %>% unique(by='spike.id')
+        
+
+        dt.spike[, binid := NULL]
+        merge.spike = merge(dt.spike, sample.spike, by='spike.id', allow.cartesian=TRUE)
+        merge.spike$cardinality = 3
+        
+        dt = merge.spike[, c('seqnames','start','end','strand','width','binid','read_idx','cardinality')]
+
+
+        jitter = rnorm(dim(dt)[[1]], sd=noise.parameter)
+        dt$jitter = jitter
+        dt[, start := start + jitter]
+        dt[, end := end + jitter]
+        dt[, jitter := NULL]
+        return(dt)
+    })
+    spikes = spikes %>% rbindlist
+
+####Remove the monomer which allowed concatemer to become spikable in the first place...
+
+    
+    out$rowid = 1:dim(out)[[1]]
+    out.to.drop = merge(unique(spikes, by='read_idx'), out, by=c('read_idx','binid'))
+    out = out[!(rowid %in% out.to.drop$rowid)]
+    
+    
+    ##browser()
+    
+    spikes$binid = gr.match(dt2gr(spikes), contact_matrix$gr)
+    
+    spike.out = rbind(out, spikes, fill=TRUE)
+
+    spike.out$cid = spike.out$read_idx
+    spike.out[, chid := NULL]
+
+    if(trim == TRUE){
+        spiked.concats = spikes[read_idx %in% spikes$read_idx]
+        added.pairwise.contacts = cocount(dt2gr(spiked.concats), bins=contact_matrix$gr, by='read_idx')
+        dt = added.pairwise.contacts$dat
+        to.remove = dt[(i %in% spikes$binid) & (j %in% spikes$binid)][i != j]
+
+        dt.i = merge(out[, c('read_idx','binid')], to.remove, by.x='binid', by.y='i', allow.cartesian=TRUE)
+        dt.j = merge(out[, c('read_idx','binid')], dt.i, by.x = c('binid','read_idx'), by.y=c('j','read_idx'))
+
+        dt.j[, count := 1:.N, by='id']
+        cid.bins = dt.j[binid != binid.y]
+        cid.bins = cid.bins[count <= value]
+        
+        cid.bins.2 = cid.bins %>% copy
+
+        cid.bins.2$binid = cid.bins$binid.y
+        cid.bins.2$binid.y = cid.bins$binid
+
+        dt.bins = rbind(cid.bins, cid.bins.2)[, c('read_idx','binid')] %>% unique(by=c('read_idx','binid'))
+
+        ##browser()
+        out$rowid = 1:dim(out)[[1]]
+        remove.out = merge(out, dt.bins, by=c('read_idx','binid'))
+        remove.out = unique(remove.out, by='read_idx')
+        out.trimmed = out[!(rowid %in% remove.out$rowid)]
+        out.trimmed[, rowid := NULL]
+        
+        spike.out.trimmed = rbind(out.trimmed, spikes, fill=TRUE)
+        spike.out = spike.out.trimmed
+    }
+    spike.out[, end := start + interval.width] 
+    return(spike.out)
 }
